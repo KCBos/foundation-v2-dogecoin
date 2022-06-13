@@ -4,7 +4,7 @@ const config = require('../../configs/example');
 const testdata = require('../../daemon/test/daemon.mock');
 const utils = require('../main/utils');
 
-config.primary.address = 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq';
+config.primary.address = 'D9JbegQSnNV8RDnGHEi8Gw5ZnnJFUmD8Qd';
 config.primary.recipients = [];
 
 const jobId = 1;
@@ -46,8 +46,8 @@ describe('Test template functionality', () => {
   test('Test generation transaction handling', () => {
     const template = new Template(jobId.toString(16), configCopy, rpcDataCopy, extraNonce);
     expect(template.generation.length).toBe(2);
-    expect(template.generation[0].slice(0, -5)).toStrictEqual(Buffer.from('04000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0f5104', 'hex'));
-    expect(template.generation[1]).toStrictEqual(Buffer.from('000000000200f2052a01000000160014e8df018c7e326cc253faac7e46cdc51e68542c420000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf900000000', 'hex'));
+    expect(template.generation[0].slice(0, -5)).toStrictEqual(Buffer.from('01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0f5104', 'hex'));
+    expect(template.generation[1]).toStrictEqual(Buffer.from('000000000200f2052a010000001976a9142dac8c1512197be0558a6a7f2c6f85cac145f4c288ac0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf900000000', 'hex'));
   });
 
   test('Test coinbase serialization [1]', () => {
@@ -55,9 +55,9 @@ describe('Test template functionality', () => {
     const extraNonce1 = Buffer.from('01', 'hex');
     const extraNonce2 = Buffer.from('00', 'hex');
     const coinbase = template.handleCoinbase(extraNonce1, extraNonce2);
-    expect(coinbase.slice(0, 44)).toStrictEqual(Buffer.from('04000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0f5104', 'hex'));
+    expect(coinbase.slice(0, 44)).toStrictEqual(Buffer.from('01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0f5104', 'hex'));
     expect(coinbase.slice(49, 51)).toStrictEqual(Buffer.from('0100', 'hex'));
-    expect(coinbase.slice(51)).toStrictEqual(Buffer.from('000000000200f2052a01000000160014e8df018c7e326cc253faac7e46cdc51e68542c420000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf900000000', 'hex'));
+    expect(coinbase.slice(51)).toStrictEqual(Buffer.from('000000000200f2052a010000001976a9142dac8c1512197be0558a6a7f2c6f85cac145f4c288ac0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf900000000', 'hex'));
   });
 
   test('Test coinbase serialization [2]', () => {
