@@ -70,19 +70,13 @@ const Loader = function(logger, configMain) {
     const normalizedPath = path.join(__dirname, '../../configs/');
     if (fs.existsSync(normalizedPath + 'dogecoin.js')) {
       config = require(normalizedPath + 'dogecoin.js');
-
-      // Validate Individual Configuration Files
       if (!config.enabled) return;
       if (!_this.checkPoolDaemons(config)) return;
       if (!_this.checkPoolPorts(config)) return;
       if (!_this.checkPoolRecipients(config)) return;
-
-    // No Configuration Created
     } else {
       throw new Error('Unable to find dogecoin.js file. Read the installation/setup instructions');
     }
-
-    // Return Validated Configuration
     return config;
   };
 };
