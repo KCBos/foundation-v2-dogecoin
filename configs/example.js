@@ -52,6 +52,7 @@ config.primary.address = '[address]';
 config.primary.coin = {};
 config.primary.coin.name = 'Dogecoin';
 config.primary.coin.symbol = 'DOGE';
+config.primary.coin.algorithm = 'scrypt';
 
 // Daemon Configuration
 config.primary.daemons = [];
