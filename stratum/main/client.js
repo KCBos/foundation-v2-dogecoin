@@ -51,12 +51,13 @@ const Client = function(config, socket, id, authorizeFn) {
     if (name.length >= 1) {
       name = name.toString().replace(/[^a-zA-Z0-9.,_-]+/g, '');
     }
-    const addresses = name.split(',');
-    if (addresses.length > 1) {
-      return [addresses[0], addresses[1]];
-    } else {
-      return [addresses[0], null];
-    }
+    // Modified to handle multiple aux addresses
+    const addresses = name.split(',').filter(address => address.length > 0);
+    // First address is primary, rest are aux
+    return {
+      primary: addresses[0],
+      auxiliary: addresses.slice(1)
+    };
   };
 
   // Validate Client Password
@@ -77,8 +78,6 @@ const Client = function(config, socket, id, authorizeFn) {
   // Validate Sent Messages
   this.validateMessages = function(message) {
     switch (message.method) {
-
-    // Supported Stratum Messages
     case 'mining.subscribe':
       _this.handleSubscribe(message);
       break;
@@ -95,8 +94,6 @@ const Client = function(config, socket, id, authorizeFn) {
       _this.activity = Date.now();
       _this.handleSubmit(message);
       break;
-
-      // Unsupported Stratum Messages
     case 'mining.get_transactions':
       _this.sendJson({
         id: message.id,
@@ -119,8 +116,6 @@ const Client = function(config, socket, id, authorizeFn) {
 
   // Validate Socket Data
   this.validateData = function(data) {
-
-    // Client is Flooding Server
     _this.messages += data;
     if (Buffer.byteLength(_this.messages, 'utf8') > 10240) {
       _this.emit('client.socket.flooded');
@@ -128,7 +123,6 @@ const Client = function(config, socket, id, authorizeFn) {
       return;
     }
 
-    // Handle Individual Messages
     if (_this.messages.indexOf('\n') !== -1) {
       const messages = _this.messages.split('\n');
       const incomplete = _this.messages.slice(-1) === '\n' ? '' : messages.pop();
@@ -148,12 +142,9 @@ const Client = function(config, socket, id, authorizeFn) {
 
   // Check for Banning Users
   this.considerBan = function(shareValid) {
-
-    // Keep Track of Valid/Invalid Shares
     if (shareValid === true) _this.shares.valid += 1;
     else _this.shares.invalid += 1;
 
-    // Check if Tracked Shares Exceeds Ban Threshold
     const totalShares = _this.shares.valid + _this.shares.invalid;
     if (totalShares >= _this.config.settings.banning.checkThreshold) {
       if (((_this.shares.invalid / totalShares) * 100) < _this.config.settings.banning.invalidPercent) {
@@ -164,34 +155,26 @@ const Client = function(config, socket, id, authorizeFn) {
         return true;
       }
     }
-
-    // No Ban Necessary
     return false;
   };
 
   // Broadcast Difficulty to Stratum Client
   this.broadcastDifficulty = function(difficulty) {
-
-    // Handle Previous Difficulty
     if (difficulty === _this.difficulty) return false;
     _this.previousDifficulty = _this.difficulty;
     _this.difficulty = difficulty;
 
-    // Process Algorithm Difficulty
     _this.sendJson({
       id: null,
       method: 'mining.set_difficulty',
       params: [difficulty],
     });
 
-    // Difficulty Updated Correctly
     return true;
   };
 
   // Broadcast Mining Job to Stratum Client
   this.broadcastMiningJob = function(parameters) {
-
-    // Check Processed Shares
     const activityAgo = Date.now() - _this.activity;
     if (activityAgo > _this.config.settings.timeout.connection) {
       const message = `The last submitted share was ${ activityAgo / 1000 | 0 } seconds ago`;
@@ -200,14 +183,12 @@ const Client = function(config, socket, id, authorizeFn) {
       return;
     }
 
-    // Update Client Difficulty
     if (_this.pendingDifficulty != null) {
       const result = _this.broadcastDifficulty(_this.pendingDifficulty);
       if (result) _this.emit('client.difficulty.updated', _this.difficulty);
       _this.pendingDifficulty = null;
     }
 
-    // Broadcast Mining Job to Client
     _this.sendJson({
       id: null,
       method: 'mining.notify',
@@ -217,23 +198,20 @@ const Client = function(config, socket, id, authorizeFn) {
 
   // Manage Stratum Subscription
   this.handleSubscribe = function(message) {
-
-    // Emit Subscription Event
     _this.emit('client.subscription', {}, (error, extraNonce1, extraNonce2Size) => {
       if (error) {
         _this.sendJson({ id: message.id, result: null, error: error });
         return;
       }
 
-      // Assign Client ExtraNonce
       _this.extraNonce1 = extraNonce1;
       _this.sendJson({
         id: message.id,
         result: [[
           ['mining.set_difficulty', _this.id],
           ['mining.notify', _this.id]],
-        extraNonce1,
-        extraNonce2Size],
+          extraNonce1,
+          extraNonce2Size],
         error: null
       });
     });
@@ -241,23 +219,20 @@ const Client = function(config, socket, id, authorizeFn) {
 
   // Manage Stratum Authorization
   this.handleAuthorize = function(message) {
-
-    // Handle Client Authentication
-    const clientAddrs = _this.validateName(message.params[0]);
+    const addresses = _this.validateName(message.params[0]);
     const clientFlags = _this.validatePassword(message.params[1]);
 
     // Set Initial Variables
-    _this.addrPrimary = clientAddrs[0];
-    _this.addrAuxiliary = clientAddrs[1];
+    _this.addrPrimary = addresses.primary;
+    _this.addrAuxiliary = addresses.auxiliary;  // Now an array of auxiliary addresses
     _this.clientPassword = message.params[1];
 
-    // Check for Difficulty Flag
     if (clientFlags.difficulty) {
       _this.enqueueDifficulty(clientFlags.difficulty);
       _this.staticDifficulty = true;
     }
 
-    // Check to Authorize Client
+    // Modified to pass array of aux addresses
     _this.authorizeFn(
       _this.socket.remoteAddress,
       _this.socket.localPort,
@@ -280,8 +255,6 @@ const Client = function(config, socket, id, authorizeFn) {
 
   // Manage Stratum Configuration
   this.handleConfigure = function(message) {
-
-    // Broadcast Version Updates
     _this.sendJson({
       id: message.id,
       result: {
@@ -290,30 +263,24 @@ const Client = function(config, socket, id, authorizeFn) {
       error: null
     });
 
-    // Update Version Mask
     _this.asicboost = false;
     _this.versionMask = '00000000';
   };
 
   // Manage Stratum Multi-Versions
   this.handleMultiVersion = function() {
-
-    // AsicBoost is Not Supported
     _this.asicboost = false;
     _this.versionMask = '00000000';
   };
 
   // Manage Stratum Submission
   this.handleSubmit = function(message) {
-
-    // Check that Address is Set
     if (!_this.addrPrimary) {
-      const workerData = _this.validateName(message.params[0]);
-      _this.addrPrimary = workerData[0];
-      _this.addrAuxiliary = workerData[1];
+      const addresses = _this.validateName(message.params[0]);
+      _this.addrPrimary = addresses.primary;
+      _this.addrAuxiliary = addresses.auxiliary;
     }
 
-    // Check that Client is Authorized
     if (!_this.authorized) {
       _this.sendJson({
         id: message.id,
@@ -324,7 +291,6 @@ const Client = function(config, socket, id, authorizeFn) {
       return;
     }
 
-    // Check that Client is Subscribed
     if (!_this.extraNonce1) {
       _this.sendJson({
         id: message.id,
@@ -335,7 +301,6 @@ const Client = function(config, socket, id, authorizeFn) {
       return;
     }
 
-    // Submit Share to Pool Server
     message.params[0] = _this.validateName(message.params[0]);
     _this.emit('client.submit', message, (error, result) => {
       if (!_this.considerBan(result)) {
@@ -350,12 +315,9 @@ const Client = function(config, socket, id, authorizeFn) {
 
   // Establish Stratum Connection
   this.setupClient = function() {
-
-    // Setup Main Socket Connection
     _this.socket.setEncoding('utf8');
     _this.emit('client.ban.check');
 
-    // Process Socket Events
     _this.socket.on('data', (data) => _this.validateData(data));
     _this.socket.on('error', (error) => _this.emit('client.socket.error', error));
     _this.socket.on('close', () => _this.emit('client.socket.disconnect'));

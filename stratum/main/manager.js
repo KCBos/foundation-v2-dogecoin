@@ -25,8 +25,7 @@ const Manager = function(config, configMain) {
 
   // Check if New Block is Processed
   this.handleUpdates = function(rpcData) {
-
-    // Build New Block Template
+    // Build New Block Template with Aux Data
     const tmpTemplate = new Template(
       _this.jobCounter.next(),
       _this.config,
@@ -42,11 +41,10 @@ const Manager = function(config, configMain) {
 
   // Check if New Block is Processed
   this.handleTemplate = function(rpcData, newBlock, newBroadcast) {
-
     // If Current Job !== Previous Job
     let isNewBlock = _this.currentJob === null;
     if (!isNewBlock && rpcData.height >= _this.currentJob.rpcData.height &&
-        ((_this.currentJob.rpcData.previousblockhash !== rpcData.previousblockhash) ||
+      ((_this.currentJob.rpcData.previousblockhash !== rpcData.previousblockhash) ||
         (_this.currentJob.rpcData.bits !== rpcData.bits))) {
       isNewBlock = true;
     }
@@ -54,6 +52,8 @@ const Manager = function(config, configMain) {
     // Build New Block Template
     if (!isNewBlock && !newBlock) return false;
     if (newBroadcast) _this.validJobs = {};
+
+    // Create template with aux data
     const tmpTemplate = new Template(
       _this.jobCounter.next(),
       _this.config,
@@ -95,7 +95,7 @@ const Manager = function(config, configMain) {
         identifier: _this.configMain.identifier || '',
         submitTime: submitTime,
         error: error[1],
-      }, false);
+      }, null, false);
       return { error: error, response: null };
     };
 
@@ -183,27 +183,38 @@ const Manager = function(config, configMain) {
       submitTime: submitTime,
     };
 
-    const auxShareData = {
-      job: jobId,
-      id: client.id,
-      ip: client.socket.remoteAddress,
-      port: client.socket.localPort,
-      addrPrimary: client.addrPrimary,
-      addrAuxiliary: client.addrAuxiliary,
-      blockDiffPrimary : blockDiffAdjusted,
-      blockType: 'auxiliary',
-      coinbase: coinbaseBuffer,
-      difficulty: difficulty,
-      hash: blockHash,
-      hex: blockHex,
-      header: headerHash,
-      headerDiff: headerBigInt,
-      identifier: _this.configMain.identifier || '',
-      shareDiff: shareDiff.toFixed(8),
-      submitTime: submitTime,
-    };
+    // Build Auxiliary Share Data for Each Chain
+    const auxSharesData = [];
+    if (job.rpcData.auxData) {
+      job.rpcData.auxData.forEach((auxData, index) => {
+        if (client.addrAuxiliary && client.addrAuxiliary[index]) {
+          auxSharesData.push({
+            job: jobId,
+            id: client.id,
+            ip: client.socket.remoteAddress,
+            port: client.socket.localPort,
+            addrPrimary: client.addrPrimary,
+            addrAuxiliary: client.addrAuxiliary[index],
+            blockDiffPrimary: blockDiffAdjusted,
+            blockType: 'auxiliary',
+            coinbase: coinbaseBuffer,
+            difficulty: difficulty,
+            hash: blockHash,
+            hex: blockHex,
+            header: headerHash,
+            headerDiff: headerBigInt,
+            height: auxData.height,
+            identifier: _this.configMain.identifier || '',
+            chainIndex: index,
+            coinData: auxData,
+            shareDiff: shareDiff.toFixed(8),
+            submitTime: submitTime,
+          });
+        }
+      });
+    }
 
-    _this.emit('manager.share', shareData, auxShareData, blockValid);
+    _this.emit('manager.share', shareData, auxSharesData, blockValid);
     return { error: null, hash: blockHash, hex: blockHex, response: true };
   };
 };

@@ -29,12 +29,42 @@ const Pool = function(config, configMain, callback) {
     payments: { enabled: _this.config.primary.payments &&
       _this.config.primary.payments.enabled },
     zmq: { enabled: _this.config.primary.zmq && _this.config.primary.zmq.enabled }};
+  // this.auxiliary = {
+  //   enabled: _this.config.auxiliary && _this.config.auxiliary.enabled,
+  //   payments: {
+  //     enabled: _this.config.auxiliary && _this.config.auxiliary.enabled &&
+  //       _this.config.auxiliary.payments && _this.config.auxiliary.payments.enabled
+  //   },
+  //   zmq: {
+  //     enabled: _this.config.auxiliary && _this.config.auxiliary.zmq &&
+  //       _this.config.auxiliary.zmq.enabled
+  //   }
+  // };
+
   this.auxiliary = {
-    enabled: _this.config.auxiliary && _this.config.auxiliary.enabled,
-    payments: { enabled: _this.config.auxiliary && _this.config.auxiliary.enabled &&
-      _this.config.auxiliary.payments && _this.config.auxiliary.payments.enabled },
-    zmq: { enabled: _this.config.auxiliary && _this.config.auxiliary.zmq &&
-      _this.config.auxiliary.zmq.enabled }};
+    enabled: config.auxiliary && config.auxiliary.length > 0,
+    coins: [], // Will store state for each aux coin
+  };
+
+  if (this.auxiliary.enabled) {
+    this.config.auxiliary.forEach((auxConfig, index) => {
+      this.auxiliary.coins[index] = {
+        enabled: auxConfig.enabled,
+        daemon: null,
+        payments: {
+          enabled: auxConfig.payments && auxConfig.payments.enabled,
+          daemon: null,
+        },
+        zmq: {
+          enabled: auxConfig.zmq && auxConfig.zmq.enabled,
+        },
+        height: null,
+        previousblockhash: null,
+        rpcData: null,
+        coin: auxConfig.coin,
+      };
+    });
+  }
 
   // Emit Logging Events
   this.emitLog = function(level, limiting, text, separator) {
@@ -45,12 +75,37 @@ const Pool = function(config, configMain, callback) {
   };
 
   // Handle Worker Authentication
-  this.authorizeWorker = function(ip, port, addrPrimary, addrAuxiliary, password, callback) {
+  this.authorizeWorker = function(ip, port, addrPrimary, auxAddresses, password, callback) {
     _this.checkPrimaryWorker(ip, port, addrPrimary, () => {
-      _this.checkAuxiliaryWorker(ip, port, addrAuxiliary, (authAuxiliary) => {
+      // Check each aux address against its corresponding coin
+      let authorized = true;
+      let remaining = auxAddresses.length;
+
+      if (remaining === 0) {
+        // No aux addresses provided, authorize based on primary only
         _this.emitLog('log', false, _this.text.stratumWorkersText1(addrPrimary, ip, port));
-        callback({ error: null, authorized: authAuxiliary, disconnect: false });
-      }, callback);
+        callback({ error: null, authorized: true, disconnect: false });
+        return;
+      }
+
+      auxAddresses.forEach((address, index) => {
+        if (index >= _this.auxiliary.coins.length) {
+          remaining--;
+          if (remaining <= 0) finished();
+          return;
+        }
+
+        _this.checkAuxiliaryWorker(ip, port, address, index, (isAuthorized) => {
+          authorized = authorized && isAuthorized;
+          remaining--;
+          if (remaining <= 0) finished();
+        }, callback);
+      });
+
+      function finished() {
+        _this.emitLog('log', false, _this.text.stratumWorkersText1(addrPrimary, ip, port));
+        callback({ error: null, authorized: authorized, disconnect: false });
+      }
     }, callback);
   };
 
@@ -73,22 +128,74 @@ const Pool = function(config, configMain, callback) {
   };
 
   // Check Auxiliary Worker for Valid Address
-  this.checkAuxiliaryWorker = function(ip, port, address, callback, callbackMain) {
-    if (_this.auxiliary.enabled && address) {
-      _this.checkWorker(_this.auxiliary.daemon, address, (authorized) => {
-        if (authorized) callback(authorized);
-        else {
-          _this.emitLog('log', false, _this.text.stratumWorkersText2(address, ip, port));
-          callbackMain({ error: null, authorized: authorized, disconnect: false });
-        }
-      });
-    } else if (_this.auxiliary.enabled) {
-      _this.emitLog('log', false, _this.text.stratumWorkersText2('<unknown>', ip, port));
-      callbackMain({ error: null, authorized: false, disconnect: false });
-    } else {
+  this.checkAuxiliaryWorker = function(ip, port, address, auxIndex, callback, callbackMain) {
+    const coin = _this.auxiliary.coins[auxIndex];
+    if (!coin || !coin.enabled || !address) {
       callback(true);
+      return;
+    }
+
+    _this.checkWorker(coin.daemon, address, (authorized) => {
+      if (authorized) {
+        callback(authorized);
+      } else {
+        _this.emitLog('log', false, _this.text.stratumWorkersText2(address, ip, port));
+        callbackMain({ error: null, authorized: authorized, disconnect: false });
+      }
+    });
+  };
+
+  this.handleAuxiliaryTemplates = function(callback) {
+    if (!_this.auxiliary.enabled) {
+      callback(null, null, false);
+      return;
+    }
+
+    let remaining = _this.auxiliary.coins.length;
+    const updates = [];
+    let anyUpdates = false;
+
+    _this.auxiliary.coins.forEach((coin, index) => {
+      if (!coin.enabled) {
+        remaining--;
+        if (remaining <= 0) finished();
+        return;
+      }
+
+      const commands = [['getauxblock', []]];
+      coin.daemon.sendCommands(commands, true, (result) => {
+        if (result.error) {
+          _this.emitLog('error', false, 'Error getting auxblock for \${_this.config.auxiliary[index].coin.name}');
+          remaining--;
+          if (remaining <= 0) finished();
+          return;
+        }
+
+        const hash = result.response.target || result.response._target || '';
+        const target = utils.uint256BufferFromHash(hash, { endian: 'little', size: 32 });
+        const update = coin.rpcData && coin.rpcData.hash != result.response.hash;
+        anyUpdates = anyUpdates || update;
+
+        coin.rpcData = JSON.parse(JSON.stringify(result.response));
+        coin.rpcData.target = utils.bufferToBigInt(target);
+        coin.rpcData.coinbasevalue = result.response.coinbasevalue;
+
+        updates.push({
+          index: index,
+          data: result.response,
+          update: update
+        });
+
+        remaining--;
+        if (remaining <= 0) finished();
+      });
+    });
+
+    function finished() {
+      callback(null, updates, anyUpdates);
     }
   };
+
 
   // Check if Submitted Block was Accepted
   this.checkAccepted = function(daemon, hash, callback) {
@@ -691,25 +798,68 @@ const Pool = function(config, configMain, callback) {
 
   // Process Auxiliary Block Template
   this.handleAuxiliaryTemplate = function(callback) {
-
-    // Build Daemon Commands
-    const commands = [['getauxblock', []]];
-
     // Handle Auxiliary Block Template Updates
     if (_this.auxiliary.enabled) {
-      _this.auxiliary.daemon.sendCommands(commands, true, (result) => {
-        if (result.error) {
-          _this.emitLog('error', false, _this.text.stratumTemplateText2(result.instance.host, JSON.stringify(result.error)));
-          callback(result.error);
-        } else {
+      // Build array to store all aux template data
+      const auxTemplates = [];
+      let processedCoins = 0;
+      let anyUpdates = false;
+
+      // Process each auxiliary coin
+      _this.auxiliary.coins.forEach((coin, index) => {
+        if (!coin.enabled) {
+          processedCoins++;
+          checkDone();
+          return;
+        }
+
+        const commands = [['getauxblock', []]];
+        coin.daemon.sendCommands(commands, true, (result) => {
+          if (result.error) {
+            _this.emitLog('error', false, _this.text.stratumTemplateText2(result.instance.host, JSON.stringify(result.error)));
+            processedCoins++;
+            checkDone();
+            return;
+          }
+
+          // Process aux block template
           const hash = result.response.target || result.response._target || '';
           const target = utils.uint256BufferFromHash(hash, { endian: 'little', size: 32 });
-          const update = _this.auxiliary.rpcData && _this.auxiliary.rpcData.hash != result.response.hash;
-          _this.auxiliary.rpcData = JSON.parse(JSON.stringify(result.response));
-          _this.auxiliary.rpcData.target = utils.bufferToBigInt(target);
-          callback(null, result.response, update);
-        }
+          const update = coin.rpcData && coin.rpcData.hash != result.response.hash;
+          anyUpdates = anyUpdates || update;
+
+          // Store parsed template data
+          coin.rpcData = JSON.parse(JSON.stringify(result.response));
+          coin.rpcData.target = utils.bufferToBigInt(target);
+          coin.rpcData.chainIndex = index; // Add chain index for identification
+
+          // Add to templates array
+          auxTemplates.push({
+            hash: result.response.hash,
+            target: coin.rpcData.target,
+            chainIndex: index,
+            height: result.response.height,
+            bits: result.response.bits,
+            chainid: _this.config.auxiliary[index].coin.chainId || (index + 1),
+            headerHash: coin.rpcData.hash,
+          });
+
+          processedCoins++;
+          checkDone();
+        });
       });
+
+      // Check if all coins have been processed
+      function checkDone() {
+        if (processedCoins === _this.auxiliary.coins.length) {
+          // Add the aux templates to the main rpcData
+          _this.auxiliary.rpcData = {
+            auxTemplates: auxTemplates,
+            target: auxTemplates.length > 0 ? auxTemplates[0].target : null // Use first aux coin's target as default
+          };
+          callback(null, _this.auxiliary.rpcData, anyUpdates);
+        }
+      }
     } else {
       callback(null, null, false);
     }
@@ -1007,34 +1157,47 @@ const Pool = function(config, configMain, callback) {
 
   // Build Auxiliary Stratum Daemons
   this.setupAuxiliaryDaemons = function(callback) {
+    if (!_this.auxiliary.enabled) {
+      callback();
+      return;
+    }
 
-    // Load Daemons from Configuration
-    const auxiliaryDaemons = _this.auxiliary.enabled ? _this.config.auxiliary.daemons : [];
-    const auxiliaryPaymentDaemon = _this.auxiliary.payments.enabled ?
-      [_this.config.auxiliary.payments.daemon] : [];
+    let remaining = _this.auxiliary.coins.length;
+    _this.auxiliary.coins.forEach((coin, index) => {
+      // Setup main daemon
+      coin.daemon = new Daemon(_this.config.auxiliary[index].daemons);
 
-    // Build Daemon Instances
-    _this.auxiliary.daemon = new Daemon(auxiliaryDaemons);
-    _this.auxiliary.payments.daemon = new Daemon(auxiliaryPaymentDaemon);
+      // Setup payment daemon if enabled
+      if (coin.payments.enabled) {
+        coin.payments.daemon = new Daemon([_this.config.auxiliary[index].payments.daemon]);
+      }
 
-    // Initialize Auxiliary Daemons and Load Settings
-    if (_this.auxiliary.enabled) {
-      _this.auxiliary.daemon.checkInstances((error) => {
-        if (error) _this.emitLog('error', false, _this.text.loaderDaemonsText3());
-        else if (_this.auxiliary.payments.enabled) {
-          _this.auxiliary.payments.daemon.checkInstances((error) => {
-            if (error) _this.emitLog('error', false, _this.text.loaderDaemonsText4());
-            else {
-              _this.emitLog('debug', true, _this.text.checksMessageText2());
-              callback();
+      // Check daemon connections
+      coin.daemon.checkInstances((error) => {
+        if (error) {
+          _this.emitLog('error', false, 'Error connecting to \${_this.config.auxiliary[index].coin.name} daemon');
+        }
+
+        if (coin.payments.enabled) {
+          coin.payments.daemon.checkInstances((error) => {
+            if (error) {
+              _this.emitLog('error', false, 'Error connecting to \${_this.config.auxiliary[index].coin.name} payment daemon');
             }
+            checkDone();
           });
         } else {
-          _this.emitLog('debug', true, _this.text.checksMessageText2());
-          callback();
+          checkDone();
         }
       });
-    } else callback();
+    });
+
+    function checkDone() {
+      remaining--;
+      if (remaining <= 0) {
+        _this.emitLog('debug', true, 'Auxiliary daemons setup complete');
+        callback();
+      }
+    }
   };
 
   // Setup Pool Ports
